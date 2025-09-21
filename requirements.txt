@@ -1,0 +1,24 @@
+# Core deep learning stack
+tensorflow
+keras_tuner
+
+# Data handling & utilities
+numpy
+pandas
+pillow
+matplotlib
+seaborn
+
+# ML / DL tools
+scikit-learn
+scikit-image
+scipy
+
+# ONNX tools
+onnx
+onnx2keras   # still the latest
+imutils
+
+# Computer vision
+opencv-python
+opencv-python-headless
