@@ -8,6 +8,8 @@ import numpy as np, pandas as pd
 from sklearn.preprocessing import LabelBinarizer
 from sklearn.model_selection import train_test_split
 
+from sklearn.utils.class_weight import compute_class_weight # Added by SK
+
 
 def unique_cols(df):
     ''' Returns one value per column, stating whether all the values are the same'''
@@ -20,22 +22,28 @@ class CTrainTestSet:
 	A class for extracting train and test sets from the original dataset, and preprocessing them.
 	'''
 
-	def __init__(self, X, y, ttkind='mixed', rescale=False, testSplit=0.2, random_state=12345):
+	def __init__(self, X, y,filenames, ttkind='image',classifier=None,balance_weight=None, rescale=False, testSplit=0.2,valid_set=None, compute_extrafeat=None,random_state=12345):
 		''' 
 		X and y are dataframes with features and labels
 		'''
 
 		self.ttkind=ttkind
 		self.testSplit=testSplit
+		self.valid_set=valid_set
 		self.random_state=random_state
-
+		self.classifier=classifier
+		self.balance_weight=balance_weight
+		self.compute_extrafeat=compute_extrafeat
+  
 		# Take care of the labels
 		self.y=y
-		self.VectorizeLabels()
-
+		self.VectorizeLabels(classifier)
+		self.filenames=filenames
+#		if classifier == 'binary':
+#			UnvectorizeLabels(self, y)
 
 		# Now the features
-		if ttkind == 'image':
+		if ttkind == 'image' and compute_extrafeat =='no':
 			self.X=self.ImageNumpyFromMixedDataframe(X)
 		elif ttkind == 'feat':
 			X = self.DropCols(X, ['npimage','rescaled'])
@@ -47,11 +55,10 @@ class CTrainTestSet:
 			if 'npimage' not in X.columns:
 				raise RuntimeError('Error: you asked for mixed Train-Test, but the dataset you gave me does not contain images.')
 			self.X=self.RemoveUselessCols(X) #Note that with ttkind=mixed, X stays a dataframe
-	
+
+    
 		# Split train and test data
-		self.Split(test_size=testSplit, random_state=random_state)
-
-
+		self.Split(test_size=testSplit,valid_set=valid_set, random_state=random_state)
 
 		# Rescale features
 		if rescale == True:
@@ -62,20 +69,31 @@ class CTrainTestSet:
 
 		return
 
-	def VectorizeLabels(self):
+	def VectorizeLabels(self,classifier):
 		''' 
 		Transform labels in one-hot encoded vectors 
 		This is where we will act if we decide to train with HYBRID LABELS
 		'''
-
 		self.lb = LabelBinarizer()
-
+# 		print('Multi_before_binrizer:',self.y)
 		self.y = self.lb.fit_transform(self.y.tolist())
+# 		print('Classifier',self.classifier)        
+# 		print('Multi',self.y)
+		if self.classifier == 'binary' or self.classifier=='versusall':
+			self.y = np.hstack((1 - self.y,self.y))
+# 			print('Binary',self.y)
+        
 		return
 
 	def UnvectorizeLabels(self, y):
 		''' Recovers the original labels from the vectorized ones '''
-		return self.lb.inverse_transform(y) 
+        
+#		if classifier == 'binary':
+#			self.y = np.hstack((1 - self.y,self.y))          
+        
+        
+		return self.lb.inverse_transform(y) if classifier == 'multi' else self.lb.inverse_transform(y[:,1])
+#		return self.lb.inverse_transform(y) 
 
 
 	def ImageNumpyFromMixedDataframe(self, X=None):
@@ -89,20 +107,33 @@ class CTrainTestSet:
 		return np.array([X.to_numpy()[i, im_col] for i in range( len(X.index) )])
 
 
-	def Split(self, test_size=0.2, random_state=12345):
+	def Split(self, test_size=0.2,valid_set=None, random_state=12345):
 		''' 
 		Splits train and test datasets.
-
 		Allows to put all the data in the test set by choosing test_size=1. This is useful for evaluation.
-
 		Handles differently the mixed case, because in that case  X is a dataframe.
 		'''
-
 				
 		if test_size<1:
-			self.trainX, self.testX, self.trainY, self.testY = train_test_split(self.X, self.y, test_size=test_size, random_state=random_state, shuffle=True)
+            
+			if valid_set == 'no':       
+				self.trainX, self.testX, self.trainY, self.testY, self.trainFilenames, self.testFilenames = train_test_split(self.X, self.y,self.filenames, test_size=test_size, random_state=random_state, shuffle=True, stratify = self.y)
+			elif valid_set == 'yes':  
+				train_ratio = 0.70
+				validation_ratio = 0.15
+				test_ratio = 0.15
+				self.trainX, self.test1X, self.trainY, self.test1Y, self.trainFilenames, self.test1Filenames = train_test_split(self.X, self.y,self.filenames, test_size=1-train_ratio,random_state=random_state, shuffle=True, stratify = self.y)   
+				self.valX, self.testX, self.valY, self.testY, self.valFilenames, self.testFilenames = train_test_split(self.test1X, self.test1Y,self.test1Filenames, test_size=test_ratio/(test_ratio + validation_ratio), random_state=random_state, shuffle=True) 
+                              
+			y_integers = np.argmax(self.trainY, axis=1)
+			if self.balance_weight=='yes':            
+				class_weights = compute_class_weight('balanced', np.unique(y_integers), y_integers)
+			else:
+				class_weights = compute_class_weight(None, np.unique(y_integers), y_integers)
+			self.class_weights = dict(enumerate(class_weights))
+
 		else: # This allows us to pack everything into the test set
-			self.trainX, self.testX, self.trainY, self.testY = None, self.X, None, self.y
+			self.trainX, self.testX, self.trainY, self.testY, self.trainFilenames, self.testFilenames = None, self.X, None, self.y
 
 
 		if self.ttkind == 'mixed':
@@ -110,6 +141,8 @@ class CTrainTestSet:
 			if self.trainX is not None:
 				self.trainXimage = self.ImageNumpyFromMixedDataframe(self.trainX)
 			self.testXimage = self.ImageNumpyFromMixedDataframe(self.testX)
+			if valid_set=='yes':
+				self.valXimage = self.ImageNumpyFromMixedDataframe(self.valX)
 
 			#Features
 			if self.trainX is not None:
@@ -117,7 +150,28 @@ class CTrainTestSet:
 				self.trainXfeat=np.array([Xf.to_numpy()[i] for i in range(len(Xf.index))])
 			Xf=self.DropCols(self.testX, ['npimage','rescaled'])
 			self.testXfeat=np.array([Xf.to_numpy()[i] for i in range(len(Xf.index))])
+			if valid_set=='yes':
+				Xf=self.DropCols(self.valX, ['npimage','rescaled'])
+				self.valXfeat=np.array([Xf.to_numpy()[i] for i in range(len(Xf.index))])
+            
+		elif self.ttkind == 'image' and self.compute_extrafeat =='yes':
+			# Images
+			if self.trainX is not None:
+				self.trainXimage = self.ImageNumpyFromMixedDataframe(self.trainX)
+			self.testXimage = self.ImageNumpyFromMixedDataframe(self.testX)
+			if valid_set=='yes':
+				self.valXimage = self.ImageNumpyFromMixedDataframe(self.valX)
 
+			#Features
+			if self.trainX is not None:
+				Xf=self.DropCols(self.trainX, ['npimage','rescaled'])
+				self.trainXfeat=np.array([Xf.to_numpy()[i] for i in range(len(Xf.index))])
+			Xf=self.DropCols(self.testX, ['npimage','rescaled'])
+			self.testXfeat=np.array([Xf.to_numpy()[i] for i in range(len(Xf.index))])
+			if valid_set=='yes':
+				Xf=self.DropCols(self.valX, ['npimage','rescaled'])
+				self.valXfeat=np.array([Xf.to_numpy()[i] for i in range(len(Xf.index))])
+            
 		return
 
 	def RemoveUselessCols(self, df):
@@ -150,7 +204,9 @@ class CTrainTestSet:
 			self.RescaleMixed()
 		elif self.ttkind == 'feat':
 			self.RescaleFeat()
-		elif self.ttkind == 'image':
+		elif self.ttkind == 'image' and self.compute_extrafeat =='yes':
+			self.RescaleMixed()
+		elif self.ttkind == 'image' and self.compute_extrafeat =='no':
 			pass # We don't rescale the image
 		else:
 			raise NotImplementedError('CTrainTestSet: ttkind must be feat, image or mixed')

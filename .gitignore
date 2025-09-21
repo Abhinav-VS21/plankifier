@@ -12,3 +12,6 @@ TODO.md
 
 data/1_zooplankton_0p5x/training/
 data/1_zooplankton_0p5x/validation/
+
+manual-data/
+.venv
